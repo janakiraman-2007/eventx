@@ -1,3 +1,4 @@
+<img width="1869" height="973" alt="image" src="https://github.com/user-attachments/assets/e771be8d-0147-44ba-a78f-b63b5257c332" />
 Eventx is a modern, responsive Event Management Platform built with Tailwind CSS and Vanilla JavaScript.
 It’s designed for hackathons, university fests, and clubs to create, manage, and register for events — all from a single interactive dashboard.
 
