@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eventx — Hackathon Ready</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { brand: { DEFAULT: '#a78bfa', dark: '#8b5cf6' } },
+          boxShadow: { glow: '0 10px 40px rgba(167,139,250,0.25)' },
+        }
+      }
+    }
+  </script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    html,body {height:100%}
+    body {font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color: #e2e8f0;}
+    .link {color:#a78bfa}
+    /* Dark theme card style */
+    .card { @apply bg-slate-900/80 backdrop-blur-xl shadow-2xl rounded-3xl p-6 border border-slate-700 transition-all duration-300 hover:shadow-glow; }
+    /* Dark theme button styles */
+    .btn { @apply inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3 font-semibold transition-all duration-300 active:scale-[0.98] focus:outline-none focus:ring-4 focus:ring-brand/50; }
+    .btn-primary { @apply btn bg-brand text-white hover:bg-brand-dark shadow-xl; }
+    .btn-ghost { @apply btn bg-transparent hover:bg-white/10 text-slate-200; }
+    .input { @apply w-full rounded-xl border border-slate-700 bg-slate-800 text-white px-4 py-3 outline-none transition focus:ring-2 focus:ring-brand; }
+    /* New badge style for dark theme */
+    .badge { @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold; background-color: #334155; color: #cbd5e1; border: 1px solid #475569; }
+    /* Animation and effect updates */
+    .fade-in { animation: fade .5s ease-out both }
+    @keyframes fade { from {opacity:0; transform:translateY(12px)} to {opacity:1; transform:none} }
+    .glow-text { text-shadow: 0 0 10px rgba(167,139,250,0.5), 0 0 20px rgba(167,139,250,0.3); }
+    .pulse-effect { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    @keyframes pulse { 0%, 100% {opacity: 1;} 50% {opacity: .5;} }
+    .card:hover { transform: translateY(-4px); }
+  </style>
+</head>
+<body class="min-h-full bg-slate-950 text-slate-200">
+  <div id="app" class="min-h-screen flex flex-col">
+    <header class="sticky top-0 z-40 bg-slate-900/80 backdrop-blur border-b border-slate-700">
+      <div class="max-w-7xl mx-auto px-6 h-20 grid grid-cols-3 items-center">
+        <nav class="flex items-center gap-4">
+          <a href="#/" class="btn btn-ghost hidden sm:inline-flex">Home</a>
+          <a href="#/dashboard" class="btn btn-ghost hidden sm:inline-flex">Dashboard</a>
+        </nav>
+        <div class="flex items-center justify-center">
+          <a href="#/" class="font-black tracking-tight text-3xl sm:text-4xl select-none glow-text transition-transform hover:scale-105">Eventx</a>
+        </div>
+        <div class="flex items-center justify-end gap-3" id="authArea"></div>
+      </div>
+    </header>
+
+    <main class="flex-1">
+      <section id="view" class="max-w-7xl mx-auto px-6 py-12"></section>
+    </main>
+
+    <footer class="border-t mt-16 border-slate-700">
+      <div class="max-w-7xl mx-auto px-6 py-8 text-sm text-slate-400 flex flex-wrap items-center justify-between gap-4">
+        <p>© <span id="year"></span> Eventx.</p>
+        <div class="flex items-center gap-3">
+          <a class="underline" href="#/about">About</a>
+          <a class="underline" href="#/terms">Terms</a>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <div id="toast" class="fixed bottom-8 left-1/2 -translate-x-1/2 hidden"></div>
+
+  <script>
+  // --------------------
+  // Tiny SPA Framework
+  // --------------------
+  const $ = s => document.querySelector(s);
+  const $$ = s => Array.from(document.querySelectorAll(s));
+  const routes = {};
+  const view = $('#view');
+  const authArea = $('#authArea');
+
+  function route(path, handler){ routes[path]=handler }
+  function navigate(path){ location.hash = path }
+  window.addEventListener('hashchange', render);
+
+  function setToast(msg, ok=true){
+    const t = $('#toast');
+    t.className = `fixed bottom-8 left-1/2 -translate-x-1/2 px-5 py-3 rounded-xl text-sm text-white shadow-lg ${ok?'bg-emerald-600':'bg-rose-600'} fade-in`;
+    t.textContent = msg; t.style.display='block';
+    setTimeout(()=> t.style.display='none', 2500);
+  }
+
+  // --------------------
+  // Storage & Models
+  // --------------------
+  const DB_KEY = 'eventhub_db_v1';
+  const USERS_KEY = 'eventhub_users_v1';
+  const SESSION_KEY = 'eventhub_session_v1';
+
+  function load(key, fallback){ try { return JSON.parse(localStorage.getItem(key)) ?? fallback } catch { return fallback } }
+  function save(key, value){ localStorage.setItem(key, JSON.stringify(value)) }
+
+  const db = {
+    // {..., participants:[{..., teamName, details:[{name,phone,collegeName,email}]}]}
+    events: load(DB_KEY, []),
+  }
+  const users = load(USERS_KEY, []); // {email, password, role, name, clubName}
+  let session = load(SESSION_KEY, null); // {email, role, name}
+  let registrationData = {}; // Temp storage for multi-step registration
+
+  function persist(){ save(DB_KEY, db.events); save(USERS_KEY, users); save(SESSION_KEY, session) }
+
+  function uid(){ return crypto.randomUUID ? crypto.randomUUID() : (Date.now()+""+Math.random()).replace('.','') }
+
+  // Seed a demo organiser and sample event (first run)
+  if(users.length === 0){
+    users.push({ email:'organiser@example.com', password:'organiser123', role:'organiser', name:'Demo Organiser', clubName: 'Tech Club' });
+    users.push({ email:'student@example.com', password:'student123', role:'student', name:'Demo Student' });
+    const eId = uid();
+    db.events.push({
+      id:eId,
+      title:'AI & Robotics Expo',
+      description:'Showcase of cutting-edge student projects in AI and robotics.',
+      category:'Tech',
+      date_time:new Date(Date.now()+86400000).toISOString(),
+      venue:'Main Auditorium',
+      max:120,
+      team_max: 4,
+      price: 250,
+      organiser_email:'organiser@example.com',
+      is_published:true,
+      announcement: 'The event schedule has been updated. Please check the main board for details.',
+      participants:[],
+      created_at:new Date().toISOString(),
+      updated_at:new Date().toISOString(),
+    });
+    persist();
+  }
+
+  // --------------------
+  // Auth
+  // --------------------
+  function signUp({email,password,role,name,clubName}){
+    if(users.find(u=>u.email===email)) throw new Error('Email already registered');
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('Invalid email');
+    if(password.length<6) throw new Error('Password must be 6+ chars');
+    const newUser = {email, password, role, name:name||'', clubName: clubName||null};
+    users.push(newUser);
+    session = {email, role, name:name||email.split('@')[0]};
+    persist();
+    return session;
+  }
+  function signIn({email,password}){
+    const u = users.find(u=>u.email===email && u.password===password);
+    if(!u) throw new Error('Invalid credentials');
+    session = {email:u.email, role:u.role, name:u.name||u.email.split('@')[0]};
+    persist();
+    return session;
+  }
+  function signOut(){ session=null; persist(); renderHeader(); navigate('#/') }
+
+  function requireAuth(role){
+    if(!session){ navigate('#/login'); setToast('Please login/register first', false); return false }
+    if(role && session.role!==role){ setToast('Access denied for this role', false); return false }
+    return true;
+  }
+
+  // --------------------
+  // UI Fragments
+  // --------------------
+  function renderHeader(){
+    const auth = session ? `
+      <span class="hidden sm:flex items-center gap-2 text-slate-200">
+        <i data-lucide="user" class="w-5 h-5"></i>
+        <span class="max-sm:hidden font-medium">${session.name || session.email}</span>
+        <span class="badge bg-brand/10 text-brand">${session.role}</span>
+      </span>
+      <button class="btn btn-primary" onclick="navigate('#/dashboard')">Dashboard</button>
+      <button class="btn btn-ghost" onclick="signOut()">Logout</button>
+    ` : `
+      <a href="#/login" class="btn btn-primary">Login</a>
+    `;
+    authArea.innerHTML = auth;
+    lucide.createIcons();
+  }
+
+  function field(id,label,type='text',attrs=''){
+    return `
+      <label class="block text-sm font-medium text-slate-400">${label}
+        <input id="${id}" type="${type}" class="input mt-1" ${attrs} />
+      </label>`
+  }
+
+  function pill(text){ return `<span class="badge">${text}</span>` }
+
+  // --------------------
+  // Home / Search
+  // --------------------
+  route('#/', () => {
+    const q = new URLSearchParams(location.hash.split('?')[1]||'').get('q')||'';
+    const list = db.events.filter(e=> e.is_published && (
+      !q || [e.title,e.category,e.venue].join(' ').toLowerCase().includes(q.toLowerCase())
+    ));
+
+    view.innerHTML = `
+      <div class="py-10">
+        <div class="text-center max-w-4xl mx-auto mb-12">
+          <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight glow-text">Discover and Register for <span class="text-brand">Events</span></h1>
+          <p class="text-slate-400 mt-4 text-lg">Search, register, and manage events with an engaging, interactive UI. A new era of event management is here.</p>
+        </div>
+        <div class="max-w-4xl mx-auto mb-10 flex gap-4">
+          <input id="search" class="input flex-1" placeholder="Search by name, category, or venue" value="${q}" />
+          <button class="btn btn-primary" onclick="doSearch()"><i data-lucide=search class=w-5 h-5></i>Search</button>
+        </div>
+
+        <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-8">
+          ${list.map(renderEventCard).join('') || emptyState('No events found')}
+        </div>
+      </div>
+    `;
+    lucide.createIcons();
+    $('#search').addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch() })
+  });
+  function doSearch(){
+    const q = $('#search').value.trim();
+    navigate(`#/?q=${encodeURIComponent(q)}`);
+    render();
+  }
+  function renderEventCard(e){
+    const regCount = e.participants.filter(p=>p.paid).reduce((a,b)=>a+(b.qty||1),0);
+    const slotsLeft = Math.max(0, (e.max||0) - regCount);
+    return `
+    <article class="card fade-in transition-transform hover:scale-[1.02]">
+      <div class="flex items-start justify-between gap-4">
+        <h3 class="font-bold text-xl">${e.title}</h3>
+        ${e.is_published? `<span class="badge bg-emerald-700 text-white">Published</span>`: `<span class="badge bg-amber-700 text-white">Draft</span>`}
+      </div>
+      <p class="text-sm text-slate-400 mt-2 line-clamp-2">${e.description||''}</p>
+      <div class="mt-4 text-sm flex flex-wrap gap-3 text-slate-400">
+        <span class="inline-flex items-center gap-1"><i data-lucide=calendar class=w-4 h-4></i> ${new Date(e.date_time).toLocaleString()}</span>
+        <span class="inline-flex items-center gap-1"><i data-lucide=map-pin class=w-4 h-4></i> ${e.venue}</span>
+      </div>
+      <div class="mt-5 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          ${pill('Max Participants: '+(e.max||0))}
+          ${slotsLeft > 0 ? `<span class="badge bg-blue-700 text-white pulse-effect">Slots left: ${slotsLeft}</span>` : `<span class="badge bg-rose-700 text-white">Sold out</span>`}
+        </div>
+        <div class="flex gap-2">
+          <a href="#/event/${e.id}" class="btn btn-ghost">Details</a>
+          <button class="btn btn-primary" onclick="goRegister('${e.id}')">Register</button>
+        </div>
+      </div>
+    </article>`
+  }
+  function emptyState(text){
+    return `<div class="col-span-full text-center py-16 text-slate-500 text-xl"><i data-lucide="info" class="w-8 h-8 mx-auto mb-2"></i><p>${text}</p></div>`
+  }
+
+  // --------------------
+  // Login & Register (separate pages)
+  // --------------------
+  window.onLogin = function(){
+    try {
+      const email = $('#li_email').value.trim();
+      const password = $('#li_password').value;
+      if (!email || !password) {
+        setToast('All fields are required', false);
+        return;
+      }
+      signIn({email,password});
+      setToast('Welcome back!');
+      renderHeader();
+      navigate('#/dashboard');
+    } catch(err){ setToast(err.message, false) }
+  }
+  window.onRegister = function(role){
+    try {
+      const name = $('#su_name').value.trim();
+      const email = $('#su_email').value.trim();
+      const password = $('#su_password').value;
+      let clubName = '';
+
+      if (!name || !email || !password) {
+        setToast('Name, Email, and Password are required', false);
+        return;
+      }
+      
+      const signUpData = {name, email, password, role};
+      
+      if(role === 'organiser') {
+        clubName = $('#su_club_name').value.trim();
+        if (!clubName) {
+          setToast('Club Name is required for organisers', false);
+          return;
+        }
+        signUpData.clubName = clubName;
+      }
+
+      signUp(signUpData);
+      setToast('Account created!');
+      renderHeader();
+      if(role==='organiser') navigate('#/dashboard'); else navigate('#/');
+    } catch(err){ setToast(err.message, false) }
+  }
+
+  route('#/login', ()=>{
+    view.innerHTML = `
+      <div class="max-w-md mx-auto card fade-in">
+        <h2 class="text-3xl font-black text-center">Login</h2>
+        <p class="text-slate-400 text-center mt-2">Welcome back to <b class="glow-text">Eventx</b>.</p>
+        <div class="mt-6 space-y-4">
+          ${field('li_email','Email','email')}
+          ${field('li_password','Password','password')}
+          <button class="btn btn-primary w-full mt-4" onclick="onLogin()">Login</button>
+          <p class="text-xs text-slate-400 text-center">Not registered? <a class="underline font-medium link" href="#/register">Register as a Student</a></p>
+        </div>
+      </div>`;
+    lucide.createIcons();
+  })
+
+  route('#/register', ()=>{
+    view.innerHTML = `
+      <div class="max-w-md mx-auto card fade-in">
+        <h2 class="text-3xl font-black text-center">Create your Student Account</h2>
+        <p class="text-slate-400 text-center mt-2">Join <b class="glow-text">Eventx</b> to attend events.</p>
+        <div class="mt-6 space-y-4">
+          ${field('su_name','Name')}
+          ${field('su_email','Email','email')}
+          ${field('su_password','Password (6+ chars)','password')}
+          <button class="btn btn-primary w-full mt-4" onclick="onRegister('student')">Create Account</button>
+          <p class="text-xs text-slate-400 text-center">Already have an account? <a class="underline font-medium link" href="#/login">Login here</a></p>
+          <p class="text-xs text-slate-400 text-center">Are you an organiser? <a class="underline font-medium link" href="#/register/organiser">Register here</a></p>
+        </div>
+      </div>`;
+    lucide.createIcons();
+  })
+
+  route('#/register/organiser', ()=>{
+    view.innerHTML = `
+      <div class="max-w-md mx-auto card fade-in">
+        <h2 class="text-3xl font-black text-center">Create your Organiser Account</h2>
+        <p class="text-slate-400 text-center mt-2">Join <b class="glow-text">Eventx</b> to host and manage events.</p>
+        <div class="mt-6 space-y-4">
+          ${field('su_name','Organiser Name')}
+          ${field('su_club_name','Club Name')}
+          ${field('su_email','Email','email')}
+          ${field('su_password','Password (6+ chars)','password')}
+          <button class="btn btn-primary w-full mt-4" onclick="onRegister('organiser')">Create Account</button>
+          <p class="text-xs text-slate-400 text-center">Already have an account? <a class="underline font-medium link" href="#/login">Login here</a></p>
+          <p class="text-xs text-slate-400 text-center">Are you a student? <a class="underline font-medium link" href="#/register">Register here</a></p>
+        </div>
+      </div>`;
+    lucide.createIcons();
+  })
+
+  // --------------------
+  // Event Details & Registration (Student)
+  // --------------------
+  route('#/event/:id', (params)=>{
+    const e = db.events.find(x=>x.id===params.id);
+    if(!e){ view.innerHTML = emptyState('Event not found'); return }
+    const regCount = e.participants.filter(p=>p.paid).reduce((a,b)=>a+(b.qty||1),0);
+    const slotsLeft = Math.max(0, (e.max||0) - regCount);
+
+    view.innerHTML = `
+      <div class="grid lg:grid-cols-3 gap-8 fade-in">
+        ${e.announcement ? `
+          <div class="lg:col-span-3 card bg-slate-800/80 border-slate-700">
+            <h4 class="font-bold text-slate-200 flex items-center gap-2"><i data-lucide="megaphone" class="w-5 h-5"></i>Announcement</h4>
+            <p class="text-slate-400 mt-1">${e.announcement}</p>
+          </div>
+        ` : ''}
+        <div class="lg:col-span-2 card">
+          <h2 class="text-3xl font-extrabold">${e.title}</h2>
+          <p class="text-slate-400 mt-3">${e.description||''}</p>
+          <div class="mt-6 flex flex-wrap gap-3 text-sm">
+            ${pill('Category: '+(e.category||'General'))}
+            ${pill('Date: '+new Date(e.date_time).toLocaleString())}
+            ${pill('Venue: '+e.venue)}
+            ${(e.team_max && e.team_max > 1) ? pill('Max Team Size: '+e.team_max) : pill('Individual Event')}
+          </div>
+        </div>
+        <aside class="card">
+          <h4 class="font-bold text-xl">Registration Details</h4>
+          <div class="mt-4 flex items-center justify-between">
+            <div>
+              <div class="text-sm text-slate-400">Price/Person</div>
+              <div class="text-2xl font-bold">₹${(e.price||0).toFixed(2)}</div>
+            </div>
+            <div>
+              <div class="text-sm text-slate-400">Slots left</div>
+              <div class="text-2xl font-bold">${slotsLeft}</div>
+            </div>
+            <div>
+              <div class="text-sm text-slate-400">Registered</div>
+              <div class="text-2xl font-bold">${regCount}</div>
+            </div>
+          </div>
+          <button class="btn btn-primary w-full mt-6" onclick="goRegister('${e.id}')">Register Now</button>
+        </aside>
+      </div>`;
+    lucide.createIcons();
+  })
+
+  window.goRegister = function(eventId){
+    if(!session){ navigate('#/login'); setToast('Please login/register first', false); return }
+    if(session.role!=='student'){ setToast('Login as student to register', false); return }
+    navigate(`#/register/${eventId}`)
+  }
+
+  // Registration Wizard Step 1: Quantity and Team Info
+  route('#/register/:id', (params)=>{
+    if(!requireAuth('student')) return;
+    const e = db.events.find(x=>x.id===params.id);
+    if(!e || !e.is_published){ view.innerHTML = emptyState('Event not available'); return }
+
+    const qtyAttrs = `min=1 ${e.team_max ? 'max='+e.team_max : ''} value=1 oninput="updateTotal(${(e.price||0)})"`;
+    
+    view.innerHTML = `
+      <div class="max-w-3xl mx-auto card fade-in">
+        <h2 class="text-2xl font-bold text-center">Register — ${e.title}</h2>
+        <div class="mt-6 grid sm:grid-cols-2 gap-5">
+          ${field('st_name','Your Name (Primary Contact)','text','value="'+(session.name||'')+'"')}
+          ${field('st_team_name','Team Name')}
+          <div>
+            ${field('st_qty','Number of Participants','number', qtyAttrs)}
+            ${e.team_max > 1 ? `<p class="text-xs text-slate-500 mt-1">Maximum team size for this event is ${e.team_max}.</p>` : ''}
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-400">Total Amount (₹)</label>
+            <input id="st_amount" class="input mt-1 bg-slate-800/50" readonly value="${(e.price||0).toFixed(2)}">
+          </div>
+        </div>
+        <div class="mt-6 flex items-center justify-end gap-3">
+          <button class="btn btn-primary" onclick="handleRegistrationStart('${e.id}')">Enter Participant Details</button>
+          <button class="btn btn-ghost" onclick="navigate('#/event/${e.id}')">Cancel</button>
+        </div>
+      </div>`;
+  })
+
+  window.updateTotal = function(price) {
+    const qty = Math.max(1, parseInt($('#st_qty').value || '1'));
+    $('#st_amount').value = (price * qty).toFixed(2);
+  }
+
+  // Registration Wizard Step 2: Participant Details
+  window.handleRegistrationStart = function(eventId) {
+    const primaryName = $('#st_name').value.trim();
+    const qty = Math.max(1, parseInt($('#st_qty').value || '1'));
+    const teamName = $('#st_team_name').value.trim();
+    
+    if (!primaryName || !teamName) {
+        setToast('Please fill in your name and team name.', false);
+        return;
+    }
+
+    const e = db.events.find(x => x.id === eventId);
+    if (e.team_max && qty > e.team_max) {
+        setToast(`Quantity cannot exceed the team limit of ${e.team_max}.`, false);
+        return;
+    }
+    const regCount = (e.participants || []).filter(p => p.paid).reduce((a, b) => a + (b.qty || 1), 0);
+    if (regCount + qty > e.max) {
+        setToast('Not enough slots left', false);
+        return;
+    }
+
+    registrationData = {
+        eventId, primaryName, qty, teamName,
+        amount: parseFloat($('#st_amount').value || '0'),
+        participants: Array.from({length: qty}, () => ({name:'', phone:'', collegeName:'', email:''}))
+    };
+    
+    showParticipantDetailsForm();
+  }
+
+  window.showParticipantDetailsForm = function() {
+    const { eventId, qty, teamName, participants } = registrationData;
+    const e = db.events.find(x => x.id === eventId);
+
+    let participantFields = '';
+    for (let i = 0; i < qty; i++) {
+        const p = participants[i] || {name: '', phone: '', collegeName: '', email:''};
+        participantFields += `
+        <div class="p-4 border border-slate-700 rounded-xl mt-4">
+            <h4 class="font-semibold text-slate-300">Participant ${i + 1}</h4>
+            <div class="grid sm:grid-cols-2 md:grid-cols-4 gap-4 mt-2">
+                ${field(`p_name_${i}`, 'Full Name', 'text', `value="${p.name}"`)}
+                ${field(`p_email_${i}`, 'Email', 'email', `value="${p.email}"`)}
+                ${field(`p_phone_${i}`, 'Phone Number', 'tel', `value="${p.phone}"`)}
+                ${field(`p_college_${i}`, 'College Name', 'text', `value="${p.collegeName}"`)}
+            </div>
+        </div>`;
+    }
+
+    view.innerHTML = `
+      <div class="max-w-6xl mx-auto card fade-in">
+        <h2 class="text-2xl font-bold text-center">Participant Details for Team "${teamName}"</h2>
+        <p class="text-slate-400 text-center mt-2">Please provide details for all ${qty} participants.</p>
+        <div id="participant-forms" class="mt-4">${participantFields}</div>
+        <div class="mt-6 flex items-center justify-end gap-3">
+          <button class="btn btn-primary" onclick="handleParticipantDetailsSubmit()">Proceed to Payment</button>
+          <button class="btn btn-ghost" onclick="navigate('#/register/${eventId}')">Back</button>
+        </div>
+      </div>`;
+  }
+
+  window.handleParticipantDetailsSubmit = function() {
+    const participants = [];
+    for (let i = 0; i < registrationData.qty; i++) {
+        const name = $(`#p_name_${i}`).value.trim();
+        const email = $(`#p_email_${i}`).value.trim();
+        const phone = $(`#p_phone_${i}`).value.trim();
+        const collegeName = $(`#p_college_${i}`).value.trim();
+
+        if (!name || !phone || !collegeName || !email) {
+            setToast(`Please fill in all details for Participant ${i + 1}`, false);
+            return;
+        }
+        if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+            setToast(`Please enter a valid email for Participant ${i + 1}`, false);
+            return;
+        }
+        participants.push({ name, email, phone, collegeName });
+    }
+    
+    registrationData.participants = participants;
+    showPaymentForm(); 
+  }
+
+  // Registration Wizard Step 3: Payment
+  window.showPaymentForm = function(){
+    const { eventId, amount } = registrationData;
+    view.innerHTML = `
+      <div class="max-w-lg mx-auto card fade-in text-center">
+        <h2 class="text-2xl font-bold">Payment Portal</h2>
+        <p class="text-slate-400 mt-2">Securely pay for your registration. Total: ₹${amount.toFixed(2)}</p>
+        <div class="mt-6 grid grid-cols-3 gap-4">
+          <button class="btn btn-ghost border border-slate-700 hover:border-brand hover:text-brand" onclick="mockPay('${eventId}', 'UPI')">UPI</button>
+          <button class="btn btn-ghost border border-slate-700 hover:border-brand hover:text-brand" onclick="mockPay('${eventId}', 'CARD')">Card</button>
+          <button class="btn btn-ghost border border-slate-700 hover:border-brand hover:text-brand" onclick="mockPay('${eventId}', 'NET')">NetBanking</button>
+        </div>
+        <button class="btn btn-ghost mt-6" onclick="showParticipantDetailsForm()">Back</button>
+      </div>`;
+  }
+
+  // Registration Wizard Step 4: Confirmation
+  window.mockPay = function(eventId, method){
+    const e = db.events.find(x=>x.id===eventId);
+    const { primaryName, qty, amount, participants, teamName } = registrationData;
+    
+    const reg = { 
+      id: uid(), 
+      user_email: session.email, 
+      name: primaryName,
+      qty, teamName,
+      paid:true, amount, method, 
+      created_at: new Date().toISOString(),
+      details: participants
+    };
+    
+    e.participants.push(reg);
+    e.updated_at = new Date().toISOString();
+    persist();
+
+    view.innerHTML = `
+      <div class="max-w-lg mx-auto card text-center fade-in">
+        <div class="mx-auto w-16 h-16 rounded-full bg-emerald-700 text-white flex items-center justify-center mb-4"><i data-lucide=check-circle class=w-10 h-10></i></div>
+        <h2 class="text-3xl font-extrabold mt-3">Payment Successful</h2>
+        <p class="text-slate-400 mt-2">Your registration is confirmed. A receipt has been sent to your email.</p>
+        <div class="mt-6 text-left bg-slate-800 border border-slate-700 rounded-xl p-5">
+          <div class="font-semibold text-lg">Transaction Summary</div>
+          <div class="text-sm mt-2 space-y-1">
+            Event: ${e.title}<br/>
+            Team Name: ${teamName}<br/>
+            Quantity: ${qty}<br/>
+            Amount Paid: ₹${amount.toFixed(2)}<br/>
+            Transaction ID: ${reg.id.substring(0,8)}...
+          </div>
+          <div class="mt-3 pt-3 border-t border-slate-700/50">
+            <div class="font-semibold">Registered Participants:</div>
+            <ul class="text-sm list-disc list-inside mt-1 space-y-2 text-slate-300">
+              ${participants.map(p => `<li>${p.name} (${p.email})<br><span class="text-xs text-slate-400 pl-4">${p.collegeName} | Ph: ${p.phone}</span></li>`).join('')}
+            </ul>
+          </div>
+        </div>
+        <button class="btn btn-primary mt-6" onclick="navigate('#/')">Go Home</button>
+      </div>`;
+    setToast('Registered successfully');
+    lucide.createIcons();
+    registrationData = {};
+  }
+
+  // --------------------
+  // Dashboard
+  // --------------------
+  route('#/dashboard', ()=>{
+    if(!requireAuth()) return;
+    const role = session.role;
+
+    if(role==='organiser'){
+      const myEvents = db.events.filter(e=> e.organiser_email===session.email);
+      view.innerHTML = `
+        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
+          <div>
+            <h2 class="text-3xl font-extrabold">Organiser Dashboard</h2>
+            <p class="text-slate-400 mt-1">Create and manage your events.</p>
+          </div>
+          <button class="btn btn-primary" onclick="openEventModal()"><i data-lucide=plus-circle class=w-5 h-5></i>Create Event</button>
+        </div>
+        <div class="card overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-left text-slate-400 border-b border-slate-700">
+                <th class="py-3 px-2">Event</th><th class="py-3 px-2">Date/Time</th><th class="py-3 px-2">Registered</th><th class="py-3 px-2">Slots Left</th><th class="py-3 px-2">Status</th><th class="py-3 px-2 text-right">Actions</th>
+            </tr></thead>
+            <tbody>${myEvents.map(renderEventRow).join('') || `<tr><td colspan=6 class="py-6 text-center text-slate-500">No events yet</td></tr>`}</tbody>
+          </table>
+        </div>
+        <dialog id="eventModal" class="p-0 rounded-2xl w-full max-w-2xl"></dialog>`;
+      lucide.createIcons();
+    } else if(role==='student'){
+      const regs = db.events.flatMap(e=> (e.participants || []).filter(p=>p.user_email===session.email).map(p=> ({e,p})) );
+      view.innerHTML = `
+        <div>
+          <h2 class="text-3xl font-extrabold">My Registrations</h2>
+          <div class="mt-6 card"><table class="w-full text-sm">
+              <thead><tr class="text-left text-slate-400 border-b border-slate-700">
+                  <th class="py-3 px-2">Event</th><th class="py-3 px-2">Team Name</th><th class="py-3 px-2">Qty</th><th class="py-3 px-2">Amount</th><th class="py-3 px-2">Txn</th>
+              </tr></thead>
+              <tbody>
+                ${regs.map(r=>`<tr class="border-t border-slate-700">
+                  <td class="py-4 px-2 font-semibold">${r.e.title}</td><td class="px-2">${r.p.teamName || 'N/A'}</td><td class="px-2">${r.p.qty}</td><td class="px-2">₹${(r.p.amount || 0).toFixed(2)}</td><td class="px-2">${(r.p.id || '').substring(0, 8)}...</td>
+                </tr>`).join('') || `<tr><td colspan=5 class="py-6 text-center text-slate-500">No registrations yet</td></tr>`}
+              </tbody>
+          </table></div>
+        </div>`;
+    }
+  })
+
+  function renderEventRow(e){
+    const regCount = (e.participants || []).filter(p=>p.paid).reduce((a,b)=>a+(b.qty||1),0);
+    const slotsLeft = Math.max(0, (e.max||0) - regCount);
+    return `<tr class="border-t border-slate-700">
+      <td class="py-4 px-2"><div class="font-semibold">${e.title}</div><div class="text-slate-400">${e.category||'General'}</div></td><td class="px-2">${new Date(e.date_time).toLocaleString()}</td><td class="px-2">${regCount} / ${e.max}</td><td class="px-2">${slotsLeft}</td><td class="px-2">${e.is_published? `<span class="badge bg-emerald-700 text-white">Published</span>` : `<span class="badge bg-amber-700 text-white">Draft</span>`}</td><td class="px-2 text-right">
+        <div class="inline-flex gap-2 flex-wrap justify-end">
+          <button class="btn btn-ghost p-2" onclick="openParticipants('${e.id}')"><i data-lucide=users class=w-4 h-4></i></button><button class="btn btn-ghost p-2" onclick="openAnnounceModal('${e.id}')"><i data-lucide=megaphone class=w-4 h-4></i></button><button class="btn btn-ghost p-2" onclick="openEventModal('${e.id}')"><i data-lucide=pencil class=w-4 h-4></i></button><button class="btn btn-ghost p-2" onclick="togglePublish('${e.id}')"><i data-lucide=${e.is_published?'eye-off':'eye'} class=w-4 h-4></i></button><button class="btn btn-ghost p-2 text-rose-500 hover:bg-white/10" onclick="deleteEvent('${e.id}')"><i data-lucide=trash2 class=w-4 h-4></i></button>
+        </div></td></tr>`
+  }
+
+  // Create/Edit Event Modal
+  window.openEventModal = function(id){
+    const isEdit = !!id;
+    const e = isEdit ? db.events.find(x=>x.id===id) : { title:'', description:'', category:'', date_time:new Date().toISOString().slice(0,16), venue:'', max:100, team_max:1, price:0, is_published:false };
+    const dlg = $('#eventModal');
+    dlg.innerHTML = `
+      <form method="dialog" class="card rounded-2xl fade-in">
+        <h3 class="text-2xl font-bold mb-4">${isEdit?'Edit':'Create'} Event</h3>
+        <div class="grid sm:grid-cols-2 gap-4">
+          ${field('ev_title','Title','text',`value="${e.title}"`)}
+          ${field('ev_category','Category','text',`value="${e.category||''}"`)}
+          <label class="block text-sm font-medium text-slate-400">Date & Time<input id="ev_date" type="datetime-local" class="input mt-1" value="${(isEdit? new Date(e.date_time) : new Date()).toISOString().slice(0,16)}" /></label>
+          ${field('ev_venue','Venue','text',`value="${e.venue}"`)}
+          ${field('ev_max','Max Participants (Overall)','number',`min=1 value="${e.max||100}"`)}
+          ${field('ev_team_max','Max Team Size','number',`min=1 value="${e.team_max||1}"`)}
+          <div class="sm:col-span-2">${field('ev_price','Price (₹) per person','number',`min=0 step="10" value="${e.price||0}"`)}</div>
+        </div>
+        <label class="block text-sm font-medium text-slate-400 mt-4">Description<textarea id="ev_desc" class="input mt-1" rows="4">${e.description||''}</textarea></label>
+        <div class="mt-6 flex items-center justify-end gap-3">
+          <button class="btn btn-ghost">Cancel</button><button class="btn btn-primary" onclick="saveEvent('${id||''}');return false;">Save</button>
+        </div>
+      </form>`;
+    dlg.showModal();
+    lucide.createIcons();
+  }
+  
+  window.openAnnounceModal = function(id){
+    const e = db.events.find(x=>x.id===id);
+    const dlg = document.createElement('dialog');
+    dlg.id = 'announceModal';
+    dlg.className = 'p-0 rounded-2xl w-full max-w-lg';
+    dlg.innerHTML = `<form method="dialog" class="card fade-in"><h3 class="text-2xl font-bold">Announcement — ${e.title}</h3><p class="text-sm text-slate-400 mt-2">This message will be shown on the event details page.</p><textarea id="announcement_text" class="input mt-4" rows="5" placeholder="Enter announcement...">${e.announcement||''}</textarea><div class="mt-6 flex items-center justify-end gap-3"><button class="btn btn-ghost">Cancel</button><button class="btn btn-primary" onclick="saveAnnouncement('${id}');return false;">Publish</button></div></form>`;
+    document.body.appendChild(dlg); dlg.showModal();
+    dlg.addEventListener('close', ()=> dlg.remove());
+  }
+  
+  window.saveAnnouncement = function(id) {
+    const e = db.events.find(x=>x.id===id);
+    e.announcement = $('#announcement_text').value.trim();
+    persist();
+    $('#announceModal')?.close();
+    setToast('Announcement published');
+  }
+
+  window.saveEvent = function(id){
+    const title = $('#ev_title').value.trim();
+    const category = $('#ev_category').value.trim();
+    const date_time = $('#ev_date').value;
+    const venue = $('#ev_venue').value.trim();
+    const max = parseInt($('#ev_max').value||'1');
+    const team_max = parseInt($('#ev_team_max').value||'1');
+    const price = parseFloat($('#ev_price').value||'0');
+    const description = $('#ev_desc').value.trim();
+    
+    if(!title || !category || !date_time || !venue) {
+      setToast('Please fill all required fields.', false);
+      return;
+    }
+
+    const eventData = {title,category,date_time:new Date(date_time).toISOString(),venue,max,team_max,price,description,updated_at:new Date().toISOString()};
+    
+    if(id){
+      const e = db.events.find(x=>x.id===id);
+      Object.assign(e, eventData);
+    } else {
+      db.events.push({ ...eventData, id:uid(), organiser_email: session.email, is_published:false, announcement: '', participants:[], created_at:new Date().toISOString() });
+    }
+    persist(); $('#eventModal').close(); setToast('Event saved'); render();
+  }
+
+  window.togglePublish = function(id){ const e = db.events.find(x=>x.id===id); e.is_published = !e.is_published; persist(); render(); setToast(e.is_published?'Event published!':'Event unpublished.'); }
+  window.deleteEvent = function(id){ if(!confirm('Are you sure?')) return; db.events.splice(db.events.findIndex(x=>x.id===id),1); persist(); render(); setToast('Event deleted.'); }
+
+  // Participants view & export
+  window.openParticipants = function(id){
+    const e = db.events.find(x=>x.id===id);
+    const rows = (e.participants || []).map(p=>`<tr class="border-t border-slate-700"><td class="py-3 px-2">${p.name}</td><td class="px-2">${p.teamName || 'N/A'}</td><td class="px-2">${p.qty}</td><td class="px-2">₹${(p.amount || 0).toFixed(2)}</td><td class="px-2">${new Date(p.created_at).toLocaleString()}</td></tr>`).join('') || `<tr><td colspan=5 class="py-6 text-center text-slate-500">No participants yet</td></tr>`;
+    const dlg = document.createElement('dialog');
+    dlg.className = 'p-0 rounded-2xl w-full max-w-4xl';
+    dlg.innerHTML = `
+      <form method="dialog" class="card fade-in">
+        <div class="flex items-center justify-between"><h3 class="text-2xl font-bold">Participants — ${e.title}</h3><div class="flex gap-2"><button class="btn btn-ghost" onclick="exportCSV('${id}');return false;"><i data-lucide=download class=w-5 h-5></i>CSV</button><button class="btn btn-primary" onclick="exportXLSX('${id}');return false;"><i data-lucide=file-spreadsheet class=w-5 h-5></i>Excel</button></div></div>
+        <div class="overflow-auto max-h-[60vh] mt-4"><table class="w-full text-sm">
+            <thead><tr class="text-left text-slate-400 border-b border-slate-700">
+                <th class="py-3 px-2">Primary Contact</th><th>Team Name</th><th>Qty</th><th>Amount Paid</th><th>Registered At</th></tr>
+            </thead><tbody>${rows}</tbody></table></div>
+        <div class="mt-6 text-right"><button class="btn btn-ghost">Close</button></div></form>`;
+    document.body.appendChild(dlg); dlg.showModal();
+    dlg.addEventListener('close', ()=> dlg.remove());
+    lucide.createIcons();
+  }
+
+  function getExportRows(eventId){
+    const e = db.events.find(x=>x.id===eventId);
+    return (e.participants || []).flatMap(p => 
+      (p.details && p.details.length > 0) ? p.details.map((d, i) => ({
+        "Team Name": p.teamName,
+        "Participant Name": d.name,
+        "Participant Email": d.email,
+        "College Name": d.collegeName,
+        "Phone Number": d.phone,
+        "Primary Contact": p.name,
+        "Registered By (Email)": p.user_email,
+        "Payment Status": p.paid ? 'Paid' : 'Unpaid',
+        "Total Amount Paid": i === 0 ? p.amount : 0,
+        "Registered At": new Date(p.created_at).toLocaleString(),
+        "Transaction ID": p.id
+      })) : []
+    );
+  }
+
+  window.exportCSV = function(eventId){
+    const rows = getExportRows(eventId);
+    if (rows.length === 0) { setToast('No participants to export', false); return; }
+    const csv = [Object.keys(rows[0]).join(','), ...rows.map(r=>Object.values(r).map(v=>`"${String(v).replaceAll('"','""')}"`).join(','))].join('\n');
+    const blob = new Blob([csv], {type:'text/csv'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${slug(db.events.find(e=>e.id===eventId).title)}-participants.csv`; a.click(); URL.revokeObjectURL(a.href);
+    setToast('Exporting CSV...');
+  }
+
+  window.exportXLSX = function(eventId){
+    const rows = getExportRows(eventId);
+    if (rows.length === 0) { setToast('No participants to export', false); return; }
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Participants');
+    XLSX.writeFile(wb, `${slug(db.events.find(e=>e.id===eventId).title)}-participants.xlsx`);
+    setToast('Exporting Excel file...');
+  }
+
+  function slug(s){ return s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') }
+
+  // --------------
+  // Router Engine
+  // --------------
+  function matchRoute(){
+    const hash = location.hash || '#/'
+    for(const pattern in routes){
+      const params = {};
+      const hashParts = hash.split('?')[0].split('/');
+      const patternParts = pattern.split('/');
+      if(hashParts.length !== patternParts.length) continue;
+      let match = true;
+      for(let i=0; i<patternParts.length; i++){
+        if(patternParts[i].startsWith(':')){
+          params[patternParts[i].slice(1)] = hashParts[i];
+        } else if(patternParts[i] !== hashParts[i]){
+          match = false; break;
+        }
+      }
+      if(match){ return { handler: routes[pattern], params }; }
+    }
+    return { handler: routes['#/'], params:{} };
+  }
+
+  function render(){
+    const {handler, params} = matchRoute();
+    handler(params);
+    renderHeader();
+  }
+
+  // Init
+  $('#year').textContent = new Date().getFullYear();
+  render();
+  </script>
+  <script type="module">
+  import { createClient } from "https://esm.run/@supabase/supabase-js@2";
+
+  const SUPABASE_URL = "https://YOUR-PROJECT.supabase.co";
+  const SUPABASE_ANON_KEY = "YOUR-ANON-KEY";
+  const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  // Shared state
+  window.appData = window.appData || { events: [] };
+  const partCache = new Map();
+
+  // --- Realtime listeners ---
+  sb
+    .channel('events')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => loadEvents())
+    .subscribe();
+
+  sb
+    .channel('participants')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'participants' }, (payload) => {
+      const eId = (payload.new?.event_id || payload.old?.event_id);
+      if (eId) refreshEventCounts(eId);
+    })
+    .subscribe();
+
+  async function refreshEventCounts(eventId){
+    const { data } = await sb.from('participants').select('*').eq('event_id', eventId);
+    partCache.set(eventId, data||[]);
+    if (typeof render === 'function') render();
+  }
+
+  // --- CRUD you can call from your existing UI handlers ---
+  async function loadEvents(){
+    const { data } = await sb.from('events').select('*').order('date_time', { ascending: true });
+    window.appData.events = data || [];
+    // warm participant caches
+    await Promise.all(window.appData.events.map(e => refreshEventCounts(e.id)));
+    if (typeof render === 'function') render();
+  }
+  window.loadEvents = loadEvents;
+
+  window.saveEvent = async function(id){
+    const payload = {
+      title: $('#ev_title').value.trim(),
+      category: $('#ev_category').value.trim(),
+      date_time: new Date($('#ev_date').value).toISOString(),
+      venue: $('#ev_venue').value.trim(),
+      max: parseInt($('#ev_max').value||'0'),
+      price: parseFloat($('#ev_price').value||'0'),
+      description: $('#ev_desc').value.trim(),
+      organiser_email: (window.session?.email)||''
+    };
+    if (!payload.title || !payload.date_time || !payload.venue){ setToast('Fill all required fields', false); return; }
+    if (id) await sb.from('events').update(payload).eq('id', id);
+    else await sb.from('events').insert(payload);
+    $('#eventModal')?.close(); setToast('Saved');
+  };
+
+  window.togglePublish = async (id) => {
+    const row = window.appData.events.find(e=>e.id===id);
+    await sb.from('events').update({ is_published: !row?.is_published }).eq('id', id);
+  };
+
+  window.deleteEvent = async (id) => {
+    if(!confirm('Delete event?')) return;
+    await sb.from('events').delete().eq('id', id);
+    setToast('Deleted');
+  };
+
+  // Registration: insert one row per student (qty=1 each)
+  window.mockPay = async function(eventId, method){
+    const s = window.__pendingReg; // from your multi-step form (name, attendees[])
+    if(!s || !Array.isArray(s.attendees) || s.attendees.length < 1){ setToast('No attendees', false); return; }
+    const priceEach = Number(window.appData.events.find(e=>e.id===eventId)?.price||0);
+    const rows = s.attendees.map(a => ({
+      event_id: eventId,
+      name: a.name,
+      reg_no: a.reg_no,
+      qty: 1,
+      paid: true,
+      amount: priceEach,
+      method,
+      booked_by: window.session?.email || ''
+    }));
+    const { error } = await sb.from('participants').insert(rows);
+    if (error){ console.error(error); setToast('Payment failed', false); return; }
+    setToast('Registered successfully');
+    navigate('#/');
+  };
+
+  // Helpers for counts
+  window.renderEventRow = function(e){
+    const regs = (partCache.get(e.id)||[]).filter(p=>p.paid).length; // qty=1 per row
+    const left = Math.max(0, (parseInt(e.max||0)||0) - regs);
+    return `<tr class="border-t">
+      <td class="py-2"><div class="font-semibold">${e.title}</div><div class="text-slate-500">${e.category||'General'}</div></td>
+      <td>${new Date(e.date_time).toLocaleString()}</td>
+      <td>${regs} / ${e.max||0}</td>
+      <td>${left}</td>
+      <td>${e.is_published? pill('Published') : pill('Draft')}</td>
+      <td class="text-right"> ...buttons... </td>
+    </tr>`;
+  };
+
+  // Start
+  window.addEventListener('DOMContentLoaded', loadEvents);
+</script>
+
+  </body>
+</html>
